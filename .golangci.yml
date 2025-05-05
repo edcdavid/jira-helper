@@ -1,0 +1,109 @@
+version: "2"
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - copyloopvar
+    - dogsled
+    - errcheck
+    - exhaustive
+    - funlen
+    - goconst
+    - gocritic
+    - gocyclo
+    - goprintffuncname
+    - gosec
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - mnd
+    - nolintlint
+    - rowserrcheck
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+  settings:
+    dupl:
+      threshold: 100
+    exhaustive:
+      default-signifies-exhaustive: true
+    funlen:
+      lines: 60
+      statements: 45
+    goconst:
+      min-len: 4
+      min-occurrences: 2
+    gocritic:
+      disabled-checks:
+        - whyNoLint
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      settings:
+        tooManyResultsChecker:
+          maxResults: 10
+    gocyclo:
+      min-complexity: 20
+    gosec:
+      excludes:
+        - G115
+    govet:
+      disable:
+        - printf
+    lll:
+      line-length: 250
+    nolintlint:
+      require-explanation: false
+      require-specific: true
+      allow-unused: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - funlen
+          - goconst
+          - mnd
+        path: _test\.go
+      - linters:
+          - mnd
+        path: config/config.go
+      - linters:
+          - gocritic
+        path: _scaling.go
+      - linters:
+          - mnd
+        path: hugepages.go
+      - linters:
+          - mnd
+        path: scheduling.go
+      - linters:
+          - lll
+        source: ^(.*= (".*"|`.*`))$
+      - linters:
+          - gocritic
+        text: 'unnecessaryDefer:'
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

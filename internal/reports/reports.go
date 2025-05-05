@@ -10,9 +10,6 @@ import (
 	"regexp"
 	"strconv"
 
-	"github.com/go-echarts/go-echarts/v2/charts"
-	"github.com/go-echarts/go-echarts/v2/opts"
-
 	jira "github.com/andygrunwald/go-jira/v2/cloud"
 
 	"encoding/base64"
@@ -23,8 +20,29 @@ import (
 
 	"github.com/tdewolff/canvas"
 	"github.com/tdewolff/canvas/renderers/rasterizer"
-	_ "github.com/tdewolff/canvas/renderers/svg" 
+	_ "github.com/tdewolff/canvas/renderers/svg"
 	"github.com/xo/echartsgoja"
+)
+
+const (
+	maxIssuesRetrieved = 500
+
+	gaugeWidth  = 100
+	gaugeHeight = 100
+
+	barWidth  = 400
+	barHeight = 100
+
+	dpi         = 200.0
+	jpegQuality = 85
+
+	greenColor  = "#00FF00"
+	yellowColor = "#E6B800"
+	blueColor   = "#015CE6"
+
+	yes  = "yes"
+	no   = "no"
+	both = "both"
 )
 
 type patTransport struct {
@@ -88,7 +106,6 @@ type stats struct {
 	statusInProgress     int
 	statusDevComplete    int
 	statusPlaning        int
-	totalStatus          int
 }
 
 func (t *patTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -96,9 +113,21 @@ func (t *patTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(req)
 }
 
-func 
-GetMarkdownReport( jiraURL, personalAccessToken, filterQuery string ) {
+func getFilterFromRelease(release, customerFacing string) string {
+	switch customerFacing {
+	case yes:
+		return `(project = "Cloud-native Network Functions" and issuetype = epic or project = "OpenShift Edge Enablement" and "Portfolio Solutions" = Telco or project = "KNI QE - System Test" and "Portfolio Solutions" = Telco and issuetype = epic and status not in (Obsolete, "Won't Fix / Obsolete", "Won't Do", "WON'T FIX", "Won't Fix / Duplicate", WONTFIX) or issue = OCPNODE-2305) and issuetype = epic and fixVersion = openshift-` + release + ` and Planning = "Customer Facing"` //nolint:lll
+	case no:
+		return `(project = "Cloud-native Network Functions" and issuetype = epic or project = "OpenShift Edge Enablement" and "Portfolio Solutions" = Telco or project = "KNI QE - System Test" and "Portfolio Solutions" = Telco and issuetype = epic and status not in (Obsolete, "Won't Fix / Obsolete", "Won't Do", "WON'T FIX", "Won't Fix / Duplicate", WONTFIX) or issue = OCPNODE-2305) and issuetype = epic and fixVersion = openshift-` + release + ` and (Planning != "Customer Facing" or Planning is EMPTY)` //nolint:lll
+	case both:
+		return `(project = "Cloud-native Network Functions" and issuetype = epic or project = "OpenShift Edge Enablement" and "Portfolio Solutions" = Telco or project = "KNI QE - System Test" and "Portfolio Solutions" = Telco and issuetype = epic and status not in (Obsolete, "Won't Fix / Obsolete", "Won't Do", "WON'T FIX", "Won't Fix / Duplicate", WONTFIX) or issue = OCPNODE-2305) and issuetype = epic and fixVersion = openshift-` + release //nolint:lll
+	default:
+		log.Fatalf("customerFacing argument: %s not supported. Use %s, %s, or %s", customerFacing, yes, no, both)
+	}
+	return ""
+}
 
+func GetMarkdownReport(jiraURL, personalAccessToken, filterQuery, release, customerFacing string) { //nolint:funlen
 	httpClient := &http.Client{
 		Transport: &patTransport{Token: personalAccessToken},
 	}
@@ -113,15 +142,24 @@ GetMarkdownReport( jiraURL, personalAccessToken, filterQuery string ) {
 	outputRed := ""
 	outputGreen := ""
 	outputNone := ""
-	jiraOption := jira.SearchOptions{MaxResults: 500}
-	issues, _, err := client.Issue.Search(context.TODO(), filterQuery,
-		&jiraOption)
+	jiraOption := jira.SearchOptions{MaxResults: maxIssuesRetrieved}
+
+	if filterQuery == "" {
+		filterQuery = getFilterFromRelease(release, customerFacing)
+	}
+
+	var issues []jira.Issue
+	issues, _, err = client.Issue.Search(context.TODO(), filterQuery, &jiraOption)
+	if err != nil {
+		log.Fatal(err)
+	}
 	for _, issue := range issues {
 		color := getCustomField("customfield_12320845", issue)
 		statusSummary := getCustomField("customfield_12320841", issue)
 		state := issue.Fields.Status.Name
 
-		output := fmt.Sprintf("  - [%s: %s](https://issues.redhat.com/browse/%s)\n", issue.Key, issue.Fields.Summary, issue.Key)
+		output := fmt.Sprintf("  - [%s: %s](https://issues.redhat.com/browse/%s)\n",
+			issue.Key, issue.Fields.Summary, issue.Key)
 
 		nbsp := "\u00A0" // Non-breaking space
 		re := regexp.MustCompile(`[\s\t\n\r` + regexp.QuoteMeta(nbsp) + `]+`)
@@ -164,25 +202,25 @@ GetMarkdownReport( jiraURL, personalAccessToken, filterQuery string ) {
 		case "To Do":
 			statistics.statusToDo++
 		case "In Progress":
-		case "Backlog":
 			statistics.statusInProgress++
 		case "Dev Complete":
 			statistics.statusDevComplete++
-		case "Refinement":
 		case "New":
 			statistics.statusNew++
 		default:
 			statistics.statusNew++
 		}
-
 	}
 
 	statistics.colorTotal = statistics.colorGreen + statistics.colorRed + statistics.colorYellow + statistics.colorNoStatus
-
-	greenGauge := generateGaugeDataURI(40, 40, "green", greenColor, statistics.colorGreen, statistics.colorTotal)
-	redGauge := generateGaugeDataURI(40, 40, "red", "red", statistics.colorRed, statistics.colorTotal)
-	yellowGauge := generateGaugeDataURI(40, 40, "yellow", yellowColor, statistics.colorYellow, statistics.colorTotal)
-	noStatusGauge := generateGaugeDataURI(40, 40, "no status", "grey", statistics.colorNoStatus, statistics.colorTotal)
+	greenGauge := generateGaugeDataURI(gaugeWidth, gaugeHeight,
+		"green", greenColor, statistics.colorGreen, statistics.colorTotal)
+	redGauge := generateGaugeDataURI(gaugeWidth, gaugeHeight,
+		"red", "red", statistics.colorRed, statistics.colorTotal)
+	yellowGauge := generateGaugeDataURI(gaugeWidth, gaugeHeight,
+		"yellow", yellowColor, statistics.colorYellow, statistics.colorTotal)
+	noStatusGauge := generateGaugeDataURI(gaugeWidth, gaugeHeight,
+		"no status", "grey", statistics.colorNoStatus, statistics.colorTotal)
 
 	fmt.Println("\n\n" + redGauge + yellowGauge + greenGauge + noStatusGauge)
 
@@ -195,18 +233,23 @@ GetMarkdownReport( jiraURL, personalAccessToken, filterQuery string ) {
 		statistics.statusToDo,
 		statistics.statusNew,
 	}
-	bar := generateBarDataURI(400, 100, labels, values)
+	bar := generateBarDataURI(barWidth, barHeight, labels, values)
 	fmt.Println(bar)
 
-	fmt.Printf("\n<span style=\"background-color:red; color:white\">RED</span>\n%s\n<span style=\"background-color:yellow; color:black\">YELLOW</span>\n%s\n<span style=\"background-color:grey; color:white\">NO STATUS</span>\n%s", outputRed, outputYellow, outputNone)
+	fmt.Printf("<br>\n\n<span style=\"background-color:red; color:white\">RED</span>\n%s\n"+
+		"<span style=\"background-color:yellow; color:black\">YELLOW</span>\n%s\n"+
+		"<span style=\"background-color:grey; color:white\">NO STATUS</span>\n%s", outputRed, outputYellow, outputNone)
 }
 
 func getCustomField(name string, issue jira.Issue) string {
 	if value, ok := issue.Fields.Unknowns[name]; ok {
 		str, ok := value.(string)
+
 		if ok {
 			return str
-		} else if name == "customfield_12320845" {
+		}
+		switch name {
+		case "customfield_12320845":
 			aJson, err := json.MarshalIndent(value, "", "  ")
 			if err != nil {
 				return ""
@@ -216,8 +259,8 @@ func getCustomField(name string, issue jira.Issue) string {
 			if err != nil {
 				return ""
 			}
-			return string(object.Value)
-		} else if name == "customfield_12318341" {
+			return object.Value
+		case "customfield_12318341":
 			aJson, err := json.MarshalIndent(value, "", "  ")
 			if err != nil {
 				return ""
@@ -227,34 +270,14 @@ func getCustomField(name string, issue jira.Issue) string {
 			if err != nil {
 				return ""
 			}
-			return string(object.Fields.Status.Name)
+			return object.Fields.Status.Name
 		}
 	}
 	return ""
 }
 
-func renderGaugeToString(value float64, name string) (string, error) {
-	gauge := charts.NewGauge()
-	gauge.SetGlobalOptions(
-		charts.WithInitializationOpts(opts.Initialization{
-			Width:    "200px",
-			Height:   "200px",
-			Renderer: "svg",
-		}),
-	)
-	gauge.AddSeries("Usage", []opts.GaugeData{{Name: name, Value: value}})
-
-	var buf bytes.Buffer
-	if err := gauge.Render(&buf); err != nil {
-		return "", err
-	}
-
-	svg := "<svg>" + buf.String() + "</svg>"
-
-	return svg, nil
-}
-
-func sVGStringToPNGDataURI(svgSrc string, quality int) (string, error) {
+func sVGStringToPNGDataURI(svgSrc string, quality int, width, height int) (string, error) {
+	// Remove style because of parsing error
 	styleRe := regexp.MustCompile(`(?is)<style.*?>.*?</style>`)
 	cleaned := styleRe.ReplaceAllString(svgSrc, "")
 
@@ -264,7 +287,7 @@ func sVGStringToPNGDataURI(svgSrc string, quality int) (string, error) {
 		return "", fmt.Errorf("parse SVG: %w", err)
 	}
 
-	img := rasterizer.Draw(c, canvas.DPMM(96.0/25.4), canvas.DefaultColorSpace)
+	img := rasterizer.Draw(c, canvas.DPI(dpi), canvas.DefaultColorSpace)
 
 	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
@@ -272,7 +295,8 @@ func sVGStringToPNGDataURI(svgSrc string, quality int) (string, error) {
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(buf.Bytes())
-	return "data:image/png;base64," + b64, nil
+
+	return fmt.Sprintf("\n\n<img src=\"data:image/jpeg;base64,%s\" width=\"%d\" height=\"%d\">", b64, width, height), nil
 }
 
 func generateBarDataURI(width, height int, labels []string, values []int) string {
@@ -282,15 +306,16 @@ func generateBarDataURI(width, height int, labels []string, values []int) string
 		total += v
 		valueStrings = append(valueStrings, strconv.Itoa(v))
 	}
-	valueStrings = append(valueStrings, strconv.Itoa(total))
+	valueStrings = append([]string{strconv.Itoa(total)}, valueStrings...)
 
 	percentagesStrings := []string{}
 	for _, v := range values {
 		percentagesStrings = append(percentagesStrings, strconv.FormatFloat(float64(v)/float64(total)*100.0, 'f', 2, 64))
 	}
-	percentagesStrings = append(percentagesStrings, "100")
+	percentagesStrings = append([]string{"100"}, percentagesStrings...)
 
-	labels = append(labels, "TOTAL")
+	labels = append([]string{"TOTAL"}, labels...)
+
 	for i := range labels {
 		labels[i] = fmt.Sprintf("%q", labels[i])
 	}
@@ -316,12 +341,11 @@ func generateBarDataURI(width, height int, labels []string, values []int) string
 	if err != nil {
 		log.Fatal(err)
 	}
-	dataURI, err := sVGStringToPNGDataURI(svg, 85)
+
+	dataURI, err := sVGStringToPNGDataURI(svg, jpegQuality, width, height)
 	if err != nil {
 		log.Fatalf("conversion failed: %v", err)
 	}
-
-	dataURI = "\n\n![Diagram](" + dataURI + ")"
 	return dataURI
 }
 
@@ -358,7 +382,7 @@ const simpleOptsBar = `{
     "axisLabel": {
       "align": "left",
       "margin": 150 ,
-      "fontSize": 7 
+      "fontSize": 10 
     },
     "axisLine": {
       "show": false
@@ -418,25 +442,18 @@ const simpleOptsBar = `{
 }
 `
 
-const greenColor = "#00FF00"
-const yellowColor = "#E6B800"
-const blueColor = "#1a0dab"
-
-func generateGaugeDataURI(width, height int, label, color string, value, total int) string {
-	percent := float64(value) / float64(total) * 100.0
+func generateGaugeDataURI(width, height int, label, color string, value, total int) string { //nolint:unparam
+	percent := float64(value) / float64(total) * 100.0 //nolint:mnd
 	patchedOptions := fmt.Sprintf(simpleOptsGauge, color, color, int(percent), strings.ToUpper(label), value, total)
 	echarts := echartsgoja.New(echartsgoja.WithWidthHeight(width, height))
 	svg, err := echarts.RenderOptions(context.Background(), patchedOptions)
 	if err != nil {
 		log.Fatal(err)
 	}
-	dataURI, err := sVGStringToPNGDataURI(svg, 85)
+	dataURI, err := sVGStringToPNGDataURI(svg, jpegQuality, width, height)
 	if err != nil {
 		log.Fatalf("conversion failed: %v", err)
 	}
-
-	// Print or embed directly in HTML:
-	dataURI = "![Gauge](" + dataURI + ")"
 	return dataURI
 }
 
@@ -455,7 +472,7 @@ const simpleOptsGauge = `{
       "pointer": { "show": false },
       "axisLine": {
         "lineStyle": {
-          "width": 5,
+          "width": 10,
           "color": [[1, "#D3D3D3"]],
           "cap": "butt"
         },
@@ -463,7 +480,7 @@ const simpleOptsGauge = `{
       },
       "progress": {
         "show": true,
-        "width": 5,
+        "width": 10,
         "roundCap": true,
         "itemStyle": {
           "color": "%s"
@@ -477,11 +494,11 @@ const simpleOptsGauge = `{
         "formatter": "{value}%%",
         "valueAnimation": true,
         "offsetCenter": [0, "-20%%"],
-        "fontSize": 7
+        "fontSize": 10
       },
       "title": {
         "offsetCenter": [0, "20%%"],
-        "fontSize": 5	,
+        "fontSize": 10	,
         "color": "%s"
       },
       "data": [
@@ -508,7 +525,7 @@ const simpleOptsGauge = `{
       "axisLabel": { "show": false },
       "detail": {
         "formatter": "{value}",
-        "fontSize": 5,
+        "fontSize": 10,
         "offsetCenter": ["-85%%","40%%"],
         "backgroundColor":"transparent"
       },
@@ -540,7 +557,7 @@ const simpleOptsGauge = `{
       "axisLabel": { "show": false },
       "detail": {
         "formatter": "{value}",
-        "fontSize": 5,
+        "fontSize": 10,
         "offsetCenter": ["85%%","40%%"],
         "backgroundColor":"transparent"
       },
