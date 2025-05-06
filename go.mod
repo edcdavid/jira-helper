@@ -4,10 +4,10 @@ go 1.23.5
 
 require (
 	github.com/andygrunwald/go-jira/v2 v2.0.0-20250322171429-cfa118a2a9d4
-	github.com/go-echarts/go-echarts/v2 v2.5.3
 	github.com/spf13/cobra v1.9.1
 	github.com/tdewolff/canvas v0.0.0-20250430140454-4197cdeab172
 	github.com/xo/echartsgoja v0.1.1
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

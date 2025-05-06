@@ -1,0 +1,19 @@
+- name: Telco Platform Engineering Waiting on Eng
+  url: https://issues.redhat.com/secure/Dashboard.jspa?selectPageId=12347081#SIGwKWmOqDAaMihQ0ggImIOqGgBNgDANBgcWmAw4nFElyBoBgDDuicGCioQAoiCQhA3tIYhrNwcS+uOQyInaDSsIUexPlg2DOdBQlAA
+  variables: 1
+  filter: createdDate >= %s and issuetype in (Bug, Weakness, Vulnerability) and ("BZ Internal Whiteboard" ~ Telco or "Internal Whiteboard" ~ Telco or "RH Private Keywords" is not EMPTY) and statusCategory in ("To Do", "In Progress") and status not in ("QE InProgress", "QE Review", "QE Verification", ON_QA, "On QA", Integration, Testing) and filter = TelcoNotOCP
+
+- name: Telco Platform Engineering waiting on QE
+  url: https://issues.redhat.com/secure/Dashboard.jspa?selectPageId=12347081#SIGwKWmOqDAaMihQ0ggImIOqGgBNgDANBgcWmAw4nFElyBoBgDDuicGAtG0HT+gQJCEDeEHHBoDD7Oe2CIg68xxL645DIUexPlg2DOdBQlAA
+  variables: 3
+  filter: createdDate >= %s and issuetype in (Bug, Weakness, Vulnerability) and ("BZ Internal Whiteboard" ~ Telco or "Internal Whiteboard" ~ Telco or "RH Private Keywords" is not EMPTY) and filter = TelcoNotOCP and status in ("QE Review", ON_QA) and (created < %s or resolved < %s)
+
+- name: Telco Platform Engineering waiting on Errata
+  url: https://issues.redhat.com/secure/Dashboard.jspa?selectPageId=12347081#SIGwKWmOqDAaMihQ0ggImIOqGgBNgDANBgcWmAw4nFElyBoBgDDuicGAtG0HT+gQJCEDeEEIjg8xxFOSBGGYYqCKYAA6CAACpij0nCEHIEJQuSYhLXIYgzJt4hyAAFBoAB0mB1HQmhXXUF0eAAlEKQ3jkMhR7E+WDYM50FCUAA
+  variables: 3
+  filter: createdDate >= %s and issuetype in (Bug, Weakness, Vulnerability) and ("BZ Internal Whiteboard" ~ Telco or "Internal Whiteboard" ~ Telco or "RH Private Keywords" is not EMPTY) and filter = TelcoNotOCP and status = Verified and "Target Version" not in (4.19, 4.19.0) and (created < %s or resolved < %s)
+
+- name: Verified and No Target Version
+  url: https://issues.redhat.com/issues/?filter=12403177&jql=(%22BZ%20Internal%20Whiteboard%22%20~%20Telco%20OR%20%22Internal%20Whiteboard%22%20~%20Telco%20OR%20filter%20%3D%20%22Other%20Telco%20Bugs%22)%20AND%20issuetype%20%3D%20Bug%20AND%20(filter%20%3D%20%22CNF%20Compute%22%20OR%20filter%20%3D%20%22Telco%20FarEdge%20ETP%20Bugs%22%20OR%20filter%20%3D%20%22Telco%20FarEdge%20RAN%20Lifecycle%20Bugs%22%20OR%20filter%20%3D%20%22Telco%20FarEdge%20RAN%20Runtime%20Bugs%22%20OR%20filter%20%3D%20%22Telco%20FarEdge%20TALO%20Bugs%22%20OR%20filter%20%3D%20%22Telco%20Network%20Bug%20Filter%22)%20AND%20status%20%3D%20Verified%20AND%20%22Target%20Version%22%20is%20EMPTY%20%20ORDER%20BY%20key%20DESC
+  variables: 0
+  filter: ("BZ Internal Whiteboard" ~ Telco OR "Internal Whiteboard" ~ Telco OR filter = "Other Telco Bugs") AND issuetype = Bug AND (filter = "CNF Compute" OR filter = "Telco FarEdge ETP Bugs" OR filter = "Telco FarEdge RAN Lifecycle Bugs" OR filter = "Telco FarEdge RAN Runtime Bugs" OR filter = "Telco FarEdge TALO Bugs" OR filter = "Telco Network Bug Filter") AND status = Verified AND "Target Version" is EMPTY  ORDER BY key DESC

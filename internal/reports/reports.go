@@ -3,16 +3,19 @@ package reports
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 
-	jira "github.com/andygrunwald/go-jira/v2/cloud"
-
 	"encoding/base64"
+
+	jira "github.com/andygrunwald/go-jira/v2/cloud"
+	"gopkg.in/yaml.v3"
 
 	"image/jpeg"
 
@@ -92,6 +95,17 @@ type jiraState struct {
 	Key  string `json:"key"`
 	Self string `json:"self"`
 }
+
+type JiraFilter struct {
+	Name      string `yaml:"name"`
+	URL       string `yaml:"url"`
+	Variables int    `yaml:"variables"`
+	Filter    string `yaml:"filter"`
+}
+
+//go:embed filters/bugstatus.yml
+var bugStatusFiltersYAML []byte
+
 type stats struct {
 	colorGreen    int
 	colorRed      int
@@ -239,6 +253,90 @@ func GetMarkdownReport(jiraURL, personalAccessToken, filterQuery, release, custo
 	fmt.Printf("<br>\n\n<span style=\"background-color:red; color:white\">RED</span>\n%s\n"+
 		"<span style=\"background-color:yellow; color:black\">YELLOW</span>\n%s\n"+
 		"<span style=\"background-color:grey; color:white\">NO STATUS</span>\n%s", outputRed, outputYellow, outputNone)
+}
+
+func GetBugStatusReport(jiraURL, personalAccessToken, releaseCutoffDate, fromDate string) {
+	filters, err := loadFilters(bugStatusFiltersYAML)
+	if err != nil {
+		log.Fatalf("Cannot load embedded filters, err:%v", err)
+	}
+	for _, filter := range filters {
+		allVariables := []string{fromDate, releaseCutoffDate, releaseCutoffDate}
+		patchedFilter := fmt.Sprintf(filter.Filter,toAnySliceNFirst(allVariables, filter.Variables)...)
+
+		bar := getBugStatusDiagram(jiraURL, personalAccessToken, patchedFilter)
+		println(bar)
+	}
+}
+func toAnySliceNFirst(slice []string, n int) []any {
+    result := make([]any, len(slice))
+    for i, v := range slice {
+        result[i] = v
+    }
+	if n>len(slice){
+		n=len(slice)
+	}
+    return result[:n]
+}
+func getBugStatusDiagram(jiraURL, personalAccessToken, filterQuery string) string {
+	jiraOption := jira.SearchOptions{MaxResults: maxIssuesRetrieved}
+	httpClient := &http.Client{
+		Transport: &patTransport{Token: personalAccessToken},
+	}
+
+	client, err := jira.NewClient(jiraURL, httpClient)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var issues []jira.Issue
+	issues, _, err = client.Issue.Search(context.TODO(), filterQuery, &jiraOption)
+	if err != nil {
+		log.Fatal(err)
+	}
+	componentsMap := map[string]int{}
+
+	for _, issue := range issues {
+		components := issue.Fields.Components
+		for _, component := range components {
+			componentsMap[component.Name]++
+		}
+	}
+
+	keys, values := getKeyValueFromMap(componentsMap)
+	return generateBarDataURI(barWidth, barHeight, keys, values)
+}
+
+func getKeyValueFromMap(aMap map[string]int) (keys []string, values []int) {
+	type keyValue struct {
+		Key   string
+		Value int
+	}
+
+	var keyValueSlice []keyValue
+	for k, v := range aMap {
+		keyValueSlice = append(keyValueSlice, keyValue{k, v})
+	}
+
+	// Sort
+	sort.Slice(keyValueSlice, func(i, j int) bool {
+		return keyValueSlice[i].Value < keyValueSlice[j].Value
+	})
+
+	for _, item := range keyValueSlice {
+		keys = append(keys, item.Key)
+		values = append(values, item.Value)
+	}
+
+	return keys, values
+}
+
+func loadFilters(filterString []byte) (filters []JiraFilter, err error) {
+	err = yaml.Unmarshal(filterString, &filters)
+	if err != nil {
+		return nil, err
+	}
+	return filters, nil
 }
 
 func getCustomField(name string, issue jira.Issue) string {
