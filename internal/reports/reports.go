@@ -36,6 +36,9 @@ const (
 	barWidth  = 400
 	barHeight = 100
 
+	bugStatusWidth  = 600
+	bugStatusHeight = 200
+
 	dpi         = 200.0
 	jpegQuality = 85
 
@@ -262,23 +265,24 @@ func GetBugStatusReport(jiraURL, personalAccessToken, releaseCutoffDate, fromDat
 	}
 	for _, filter := range filters {
 		allVariables := []string{fromDate, releaseCutoffDate, releaseCutoffDate}
-		patchedFilter := fmt.Sprintf(filter.Filter,toAnySliceNFirst(allVariables, filter.Variables)...)
+		patchedFilter := fmt.Sprintf(filter.Filter, toAnySliceNFirst(allVariables, filter.Variables)...)
 
-		bar := getBugStatusDiagram(jiraURL, personalAccessToken, patchedFilter)
+		bar := getBugStatusDiagram(jiraURL, personalAccessToken, patchedFilter, bugStatusWidth, bugStatusHeight)
+		fmt.Println("\n\n- [" + filter.Name + "](" + filter.URL + ")")
 		println(bar)
 	}
 }
 func toAnySliceNFirst(slice []string, n int) []any {
-    result := make([]any, len(slice))
-    for i, v := range slice {
-        result[i] = v
-    }
-	if n>len(slice){
-		n=len(slice)
+	result := make([]any, len(slice))
+	for i, v := range slice {
+		result[i] = v
 	}
-    return result[:n]
+	if n > len(slice) {
+		n = len(slice)
+	}
+	return result[:n]
 }
-func getBugStatusDiagram(jiraURL, personalAccessToken, filterQuery string) string {
+func getBugStatusDiagram(jiraURL, personalAccessToken, filterQuery string, width, height int) string {
 	jiraOption := jira.SearchOptions{MaxResults: maxIssuesRetrieved}
 	httpClient := &http.Client{
 		Transport: &patTransport{Token: personalAccessToken},
@@ -304,7 +308,7 @@ func getBugStatusDiagram(jiraURL, personalAccessToken, filterQuery string) strin
 	}
 
 	keys, values := getKeyValueFromMap(componentsMap)
-	return generateBarDataURI(barWidth, barHeight, keys, values)
+	return generateBarDataURI(width, height, keys, values)
 }
 
 func getKeyValueFromMap(aMap map[string]int) (keys []string, values []int) {
@@ -453,7 +457,7 @@ const simpleOptsBar = `{
     "trigger": "axis"
   },
   "grid": {
-    "left": 160 ,
+    "left": 260 ,
        "top": 10, 
     "bottom": 10, 
     "right": 50  
@@ -479,7 +483,7 @@ const simpleOptsBar = `{
     "data": %s,
     "axisLabel": {
       "align": "left",
-      "margin": 150 ,
+      "margin": 250 ,
       "fontSize": 10 
     },
     "axisLine": {
