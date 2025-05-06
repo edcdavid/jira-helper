@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to release (e.g., v1.0.0)'
+        required: true
 permissions:
   contents: read
   packages: write
