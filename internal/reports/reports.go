@@ -8,6 +8,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"time"
+	"unicode"
+
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,6 +19,10 @@ import (
 	"encoding/base64"
 
 	jira "github.com/andygrunwald/go-jira/v2/cloud"
+	"github.com/edcdavid/jira-helper/internal/jirahelper"
+	"github.com/edcdavid/jira-helper/internal/stringhelper"
+	"github.com/ollama/ollama/api"
+	"github.com/schollz/progressbar/v3"
 	"gopkg.in/yaml.v3"
 
 	"image/jpeg"
@@ -28,7 +36,7 @@ import (
 )
 
 const (
-	maxIssuesRetrieved = 500
+	maxIssuesRetrieved = 50
 
 	gaugeWidth  = 100
 	gaugeHeight = 100
@@ -49,6 +57,15 @@ const (
 	yes  = "yes"
 	no   = "no"
 	both = "both"
+
+	aiSeed = 42
+
+	logFileName = "jira-helper.log"
+)
+
+var (
+	FALSE = false
+	TRUE  = true
 )
 
 type patTransport struct {
@@ -144,7 +161,20 @@ func getFilterFromRelease(release, customerFacing string) string {
 	return ""
 }
 
-func GetMarkdownReport(jiraURL, personalAccessToken, filterQuery, release, customerFacing string) { //nolint:funlen
+func initLog() {
+	// Open or create log file
+	file, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666) //nolint:gocritic,mnd
+	if err != nil {
+		log.Fatalf("Failed to open log file: %v", err)
+	}
+	defer file.Close()
+
+	// Set log output to file
+	log.SetOutput(file)
+}
+
+func GetMarkdownReport(jiraURL, personalAccessToken, filterQuery, release, customerFacing, ollamaModel string, showOriginalStatus bool) { //nolint:funlen
+	initLog()
 	httpClient := &http.Client{
 		Transport: &patTransport{Token: personalAccessToken},
 	}
@@ -159,20 +189,28 @@ func GetMarkdownReport(jiraURL, personalAccessToken, filterQuery, release, custo
 	outputRed := ""
 	outputGreen := ""
 	outputNone := ""
-	jiraOption := jira.SearchOptions{MaxResults: maxIssuesRetrieved}
 
 	if filterQuery == "" {
 		filterQuery = getFilterFromRelease(release, customerFacing)
 	}
 
 	var issues []jira.Issue
-	issues, _, err = client.Issue.Search(context.TODO(), filterQuery, &jiraOption)
+	issues, err = jirahelper.FetchAllIssues(context.TODO(), client, filterQuery, maxIssuesRetrieved)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	progressBar := progressbar.NewOptions(len(issues),
+		progressbar.OptionEnableColorCodes(true),
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionSetDescription(fmt.Sprintf("Processing status summary with %s model ...", ollamaModel)))
+
 	for _, issue := range issues {
-		color := getCustomField("customfield_12320845", issue)
-		statusSummary := getCustomField("customfield_12320841", issue)
+		_ = progressBar.Add(1)
+
+		color := getCustomField("customfield_12320845", &issue)
+		statusSummary := getCustomField("customfield_12320841",
+			&issue)
 		state := issue.Fields.Status.Name
 
 		output := fmt.Sprintf("  - [%s: %s](https://issues.redhat.com/browse/%s)\n",
@@ -182,16 +220,19 @@ func GetMarkdownReport(jiraURL, personalAccessToken, filterQuery, release, custo
 		re := regexp.MustCompile(`[\s\t\n\r` + regexp.QuoteMeta(nbsp) + `]+`)
 		cleaned := re.ReplaceAllString(statusSummary, "")
 
-		// Add bullet
-		re = regexp.MustCompile(`[\n]+`)
-		statusSummaryBullets := re.ReplaceAllString(statusSummary, "\n    - ")
-
-		// Remove empty lines
-		re = regexp.MustCompile(`(?m)^[\s` + regexp.QuoteMeta(nbsp) + `\-]*$`)
-		statusSummaryBullets = re.ReplaceAllString(statusSummaryBullets, "")
-
 		if cleaned != "" {
-			output += fmt.Sprintf("    - %s\n", statusSummaryBullets)
+			if ollamaModel != "" {
+				output = aiFormatStatus(statusSummary, output, ollamaModel)
+			} else {
+				// Add bullet
+				re = regexp.MustCompile(`\n+`)
+				statusSummaryBullets := re.ReplaceAllString(statusSummary, "\n    - ")
+
+				// Remove empty lines
+				re = regexp.MustCompile(`(?m)^[\s` + regexp.QuoteMeta(nbsp) + `\-]*$`)
+				statusSummaryBullets = re.ReplaceAllString(statusSummaryBullets, "")
+				output += fmt.Sprintf("    - %s\n", statusSummaryBullets)
+			}
 		}
 
 		switch color {
@@ -253,11 +294,107 @@ func GetMarkdownReport(jiraURL, personalAccessToken, filterQuery, release, custo
 	bar := generateBarDataURI(barWidth, barHeight, labels, values)
 	fmt.Println(bar)
 
-	fmt.Printf("<br>\n\n<span style=\"background-color:red; color:white\">RED</span>\n%s\n"+
+	finalOutput := fmt.Sprintf("<br>\n\n<span style=\"background-color:red; color:white\">RED</span>\n%s\n"+
 		"<span style=\"background-color:yellow; color:black\">YELLOW</span>\n%s\n"+
 		"<span style=\"background-color:grey; color:white\">NO STATUS</span>\n%s", outputRed, outputYellow, outputNone)
+	if !showOriginalStatus {
+		finalOutput = stringhelper.StripMarkdownCodeBlocks(finalOutput)
+	}
+	fmt.Println(finalOutput)
 }
 
+func aiFormatStatus(input, issueHeader, ollamaModel string) string { //nolint:funlen
+	input = strings.ReplaceAll(input, "\r", "")
+	input = strings.ReplaceAll(input, "\n\n", "\n")
+	input = strings.ReplaceAll(input, "\t", " ")
+	input = strings.ReplaceAll(input, " / ", "/")
+	// Create a new client
+	client, err := api.ClientFromEnvironment()
+	if err != nil {
+		log.Fatalf("Failed to create Ollama client: %v", err)
+	}
+
+	// Define the chat request
+	chatReq := &api.ChatRequest{
+		Model: ollamaModel, // Replace with your desired model
+		Messages: []api.Message{
+			{
+				Role: "system",
+				//nolint:lll
+				Content: fmt.Sprintf(`Identify all status entries in the input. Each status begins with a date (which may or may not include a year) and ends either when the next status begins or at the end of the input. If a date is missing a year, assume it is %d.
+
+From all the statuses, extract only the most recent one by date.
+
+For the selected status:
+
+Remove all Atlassian-style wiki markup, including:
+
+Formatting such as *bold*, _italics_
+
+Headings like h1., h2., etc.
+
+Any list formatting such as lines starting with *, -, or +
+
+Remove any existing bullet points from the original content.
+
+Do not alter any words, phrases, punctuation, or sentence structure. Preserve the exact original wording.
+
+Split the cleaned content into logical bullet points, using one bullet per sentence or coherent chunk.
+
+Format the output as follows:
+
+Start with the date in this format: **MM/DD/YYYY**:
+
+Immediately after the colon (with no blank line), write each bullet point on a new line
+
+On the next lines, write each bullet point on its own line, with exactly 6 spaces of indentation before the dash (-), like this:
+      - This is a bullet point.
+
+Do not insert blank lines between bullet points. Every bullet should be on the next immediate line.
+
+After the bullet list, include the full original extracted status (before cleaning or splitting), inside a Markdown code block using triple backticks.
+At the top of the code block, include the full status date.
+
+Do not indent the code block or its contents.
+
+Return only this formatted output. Do not include any additional text or explanation.`, time.Now().Year()),
+			},
+			{
+				Role:    "user",
+				Content: input,
+			},
+		},
+		Options: map[string]interface{}{
+			"seed": aiSeed,
+		},
+		Stream: &FALSE,
+	}
+
+	// Send the chat request
+	var chatResp string
+	err = client.Chat(context.Background(), chatReq, func(resp api.ChatResponse) error {
+		chatResp = trimLeadingWhitespaceAndNewlines(removeThinkBlocks(resp.Message.Content))
+		return nil
+	})
+	if err != nil {
+		log.Fatalf("Chat request failed: %v", err)
+	}
+
+	// Print the response
+	log.Println("Original:", input)
+	log.Println("Model response:", chatResp)
+	log.Println("------------------------------------------")
+
+	chatResp += "\n"
+	return issueHeader + fmt.Sprintf("    - %s\n\n", chatResp)
+}
+func trimLeadingWhitespaceAndNewlines(s string) string {
+	return strings.TrimLeftFunc(s, unicode.IsSpace)
+}
+func removeThinkBlocks(input string) string {
+	re := regexp.MustCompile(`(?s)<think>.*?</think>`)
+	return re.ReplaceAllString(input, "")
+}
 func GetBugStatusReport(jiraURL, personalAccessToken, releaseCutoffDate, fromDate string) {
 	filters, err := loadFilters(bugStatusFiltersYAML)
 	if err != nil {
@@ -268,8 +405,7 @@ func GetBugStatusReport(jiraURL, personalAccessToken, releaseCutoffDate, fromDat
 		patchedFilter := fmt.Sprintf(filter.Filter, toAnySliceNFirst(allVariables, filter.Variables)...)
 
 		bar := getBugStatusDiagram(jiraURL, personalAccessToken, patchedFilter, bugStatusWidth, bugStatusHeight)
-		fmt.Println("\n\n- [" + filter.Name + "](" + filter.URL + ")")
-		println(bar)
+		fmt.Println("\n\n- [" + filter.Name + "](" + filter.URL + ")" + "\n" + bar)
 	}
 }
 func toAnySliceNFirst(slice []string, n int) []any {
@@ -283,7 +419,6 @@ func toAnySliceNFirst(slice []string, n int) []any {
 	return result[:n]
 }
 func getBugStatusDiagram(jiraURL, personalAccessToken, filterQuery string, width, height int) string {
-	jiraOption := jira.SearchOptions{MaxResults: maxIssuesRetrieved}
 	httpClient := &http.Client{
 		Transport: &patTransport{Token: personalAccessToken},
 	}
@@ -294,7 +429,7 @@ func getBugStatusDiagram(jiraURL, personalAccessToken, filterQuery string, width
 	}
 
 	var issues []jira.Issue
-	issues, _, err = client.Issue.Search(context.TODO(), filterQuery, &jiraOption)
+	issues, err = jirahelper.FetchAllIssues(context.TODO(), client, filterQuery, maxIssuesRetrieved)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -343,7 +478,7 @@ func loadFilters(filterString []byte) (filters []JiraFilter, err error) {
 	return filters, nil
 }
 
-func getCustomField(name string, issue jira.Issue) string {
+func getCustomField(name string, issue *jira.Issue) string {
 	if value, ok := issue.Fields.Unknowns[name]; ok {
 		str, ok := value.(string)
 
@@ -378,7 +513,7 @@ func getCustomField(name string, issue jira.Issue) string {
 	return ""
 }
 
-func sVGStringToPNGDataURI(svgSrc string, quality int, width, height int) (string, error) {
+func sVGStringToPNGDataURI(svgSrc string, quality, width, height int) (string, error) {
 	// Remove style because of parsing error
 	styleRe := regexp.MustCompile(`(?is)<style.*?>.*?</style>`)
 	cleaned := styleRe.ReplaceAllString(svgSrc, "")
